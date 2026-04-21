@@ -4,6 +4,8 @@ services:
     image: docker-dashboard:latest
     container_name: docker-dashboard
     restart: unless-stopped
+    group_add:
+      - "${DOCKER_GID:?DOCKER_GID is required — run ./deploy.sh or set it in .env}"
     ports:
       - "3000:3000"
     volumes:

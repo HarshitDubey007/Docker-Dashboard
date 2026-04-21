@@ -28,10 +28,25 @@ else
 fi
 ok "compose: $("${COMPOSE[@]}" version --short 2>/dev/null || echo installed)"
 
+DOCKER_GID=""
 if [ -S /var/run/docker.sock ]; then
   ok "docker socket: /var/run/docker.sock present"
+  if command -v stat >/dev/null 2>&1; then
+    # Linux stat (GNU) first, fall back to BSD stat (macOS)
+    DOCKER_GID="$(stat -c '%g' /var/run/docker.sock 2>/dev/null || stat -f '%g' /var/run/docker.sock 2>/dev/null || echo "")"
+  fi
+  if [ -z "$DOCKER_GID" ] && command -v getent >/dev/null 2>&1; then
+    DOCKER_GID="$(getent group docker | cut -d: -f3 || true)"
+  fi
+  if [ -n "$DOCKER_GID" ]; then
+    ok "docker socket GID detected: ${DOCKER_GID}"
+  else
+    warn "Could not detect docker socket GID — defaulting to 999. Edit DOCKER_GID in .env if the container can't reach the socket."
+    DOCKER_GID=999
+  fi
 else
   warn "/var/run/docker.sock not found — the 'Local Server' will not appear. You can still add remote servers."
+  DOCKER_GID=999
 fi
 
 if [ ! -f .env ]; then
@@ -45,14 +60,31 @@ if [ ! -f .env ]; then
 PORT=3000
 JWT_SECRET=${GENERATED_SECRET}
 DEFAULT_ADMIN_PASSWORD=admin123
+DOCKER_GID=${DOCKER_GID}
 EOF
-  ok "Wrote .env (JWT_SECRET generated)"
+  ok "Wrote .env (JWT_SECRET generated, DOCKER_GID=${DOCKER_GID})"
 else
   ok ".env already exists"
+  if grep -qE '^DOCKER_GID=' .env; then
+    CURRENT_GID="$(grep -E '^DOCKER_GID=' .env | cut -d= -f2)"
+    if [ "$CURRENT_GID" != "$DOCKER_GID" ]; then
+      warn "DOCKER_GID in .env is ${CURRENT_GID}, but host socket GID is ${DOCKER_GID}. Leaving .env untouched — update it manually if the container can't reach docker.sock."
+    fi
+  else
+    log "Appending DOCKER_GID=${DOCKER_GID} to existing .env"
+    printf '\nDOCKER_GID=%s\n' "$DOCKER_GID" >> .env
+  fi
 fi
 
 mkdir -p data
-ok "data/ directory ready"
+# Container runs as UID 1001 (see Dockerfile). Host-side bind mount must be writable by that UID.
+if [ "$(id -u)" = "0" ]; then
+  chown -R 1001:1001 data
+  ok "data/ directory ready (chown 1001:1001)"
+else
+  warn "Not running as root — can't chown data/. If the container logs show EACCES on /app/data, run: sudo chown -R 1001:1001 data"
+  ok "data/ directory ready"
+fi
 
 log "Building & starting container..."
 "${COMPOSE[@]}" up -d --build
