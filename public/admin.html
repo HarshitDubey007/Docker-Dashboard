@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <title>Docker Dashboard — Users</title>
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="app-header">
+      <div class="logo">&gt; DOCKER<span class="logo-sub">_DASHBOARD</span></div>
+      <div class="spacer"></div>
+      <nav id="main-nav" class="flex gap-1"></nav>
+      <div id="user-area" class="flex gap-1"></div>
+    </header>
+
+    <div class="page-wrap two-col">
+      <div class="panel">
+        <div class="panel-header">
+          <div class="title">Users</div>
+          <div class="spacer"></div>
+          <button class="primary" id="new-user">+ New User</button>
+        </div>
+        <div class="panel-body no-pad" id="user-table"></div>
+      </div>
+
+      <div class="panel" id="user-detail-panel">
+        <div class="panel-header">
+          <div class="title" id="detail-title">Select a user</div>
+        </div>
+        <div class="panel-body" id="detail-body">
+          <div class="empty-state" style="padding:30px;">Select a user from the list</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- New user modal -->
+  <div class="modal-overlay hidden" id="modal">
+    <div class="modal">
+      <div class="modal-header" id="modal-title">New User</div>
+      <div class="modal-body">
+        <div class="field">
+          <label>Username</label>
+          <input id="m-username" />
+        </div>
+        <div class="field">
+          <label>Password</label>
+          <input id="m-password" type="password" />
+          <div class="small text-muted mt-1" id="m-password-hint"></div>
+        </div>
+        <div class="field">
+          <label>Role</label>
+          <select id="m-role">
+            <option value="viewer">Viewer</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+        <div class="small text-danger" id="m-error" style="color:var(--danger);min-height:14px;"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="m-cancel">Cancel</button>
+        <button class="primary" id="m-save">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/api.js"></script>
+  <script>
+    if (!API.requireAuth()) throw new Error('redirecting');
+
+    let users = [];
+    let servers = [];
+    let containersByServer = {}; // serverId -> array
+    let selectedUserId = null;
+    let activeTab = 'details'; // 'details' | 'access'
+    let activeServerTab = null;
+    let draftAssignments = null; // Map-like set per server: Set<`${serverId}:${containerId}`>
+    let modalMode = 'create'; // 'create' | 'edit'
+
+    async function boot() {
+      const me = await API.loadCurrentUser();
+      if (!me || me.role !== 'admin') { location.href = '/index.html'; return; }
+      API.renderUserBadge(document.getElementById('user-area'));
+      API.renderAdminNav(document.getElementById('main-nav'));
+
+      document.getElementById('new-user').onclick = openCreateModal;
+      document.getElementById('m-cancel').onclick = closeModal;
+      document.getElementById('m-save').onclick = saveModal;
+
+      await Promise.all([refreshUsers(), refreshServers()]);
+      renderDetail();
+    }
+
+    async function refreshUsers() {
+      const { users: list } = await API.apiFetch('/api/users');
+      users = list;
+      renderUserTable();
+    }
+
+    async function refreshServers() {
+      const { servers: list } = await API.apiFetch('/api/servers');
+      servers = list;
+      // preload containers only when needed
+    }
+
+    async function getContainersForServer(serverId) {
+      if (containersByServer[serverId]) return containersByServer[serverId];
+      try {
+        const { containers } = await API.apiFetch(`/api/servers/${serverId}/containers`);
+        containersByServer[serverId] = containers;
+      } catch (_) {
+        containersByServer[serverId] = [];
+      }
+      return containersByServer[serverId];
+    }
+
+    function renderUserTable() {
+      const el = document.getElementById('user-table');
+      if (!users.length) { el.innerHTML = `<div class="empty-state" style="padding:30px;">No users</div>`; return; }
+      el.innerHTML = `
+        <table>
+          <thead><tr><th>Username</th><th>Role</th><th>Assignments</th><th>Last Login</th><th></th></tr></thead>
+          <tbody>
+            ${users.map(u => {
+              const serversWithAccess = new Set((u.assignedContainers || []).map(a => a.serverId));
+              return `
+              <tr data-id="${u.id}" class="${u.id === selectedUserId ? 'selected' : ''}" style="cursor:pointer">
+                <td>${API.escapeHtml(u.username)}</td>
+                <td><span class="role-pill ${u.role}">${u.role.toUpperCase()}</span></td>
+                <td class="small text-muted">${u.role === 'admin' ? 'all' : `${(u.assignedContainers || []).length} containers · ${serversWithAccess.size} servers`}</td>
+                <td class="small text-muted">${u.lastLogin ? API.timeAgo(u.lastLogin) : 'never'}</td>
+                <td class="right"><button class="ghost small" data-del="${u.id}">Delete</button></td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      `;
+      el.querySelectorAll('tr[data-id]').forEach(tr => {
+        tr.onclick = () => {
+          selectedUserId = tr.dataset.id;
+          draftAssignments = null;
+          activeTab = 'details';
+          renderDetail();
+          renderUserTable();
+        };
+      });
+      el.querySelectorAll('[data-del]').forEach(b => b.onclick = async (e) => {
+        e.stopPropagation();
+        const u = users.find(x => x.id === b.dataset.del);
+        if (!confirm(`Delete user "${u.username}"?`)) return;
+        try {
+          await API.apiFetch(`/api/users/${u.id}`, { method: 'DELETE' });
+          if (selectedUserId === u.id) { selectedUserId = null; renderDetail(); }
+          await refreshUsers();
+        } catch (ex) { alert(ex.message); }
+      });
+    }
+
+    function renderDetail() {
+      const title = document.getElementById('detail-title');
+      const body = document.getElementById('detail-body');
+      if (!selectedUserId) {
+        title.textContent = 'Select a user';
+        body.innerHTML = `<div class="empty-state" style="padding:30px;">Select a user from the list</div>`;
+        return;
+      }
+      const u = users.find(x => x.id === selectedUserId);
+      if (!u) { selectedUserId = null; return renderDetail(); }
+      title.textContent = u.username;
+
+      body.innerHTML = `
+        <div class="tabs" style="padding:0;margin:-14px -14px 14px -14px;">
+          <div class="tab ${activeTab === 'details' ? 'active' : ''}" data-t="details">Details</div>
+          <div class="tab ${activeTab === 'access' ? 'active' : ''}" data-t="access">Container Access</div>
+        </div>
+        <div id="tab-body"></div>
+      `;
+      body.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+        activeTab = t.dataset.t;
+        renderDetail();
+      });
+      if (activeTab === 'details') renderDetailsTab(u);
+      else renderAccessTab(u);
+    }
+
+    function renderDetailsTab(u) {
+      document.getElementById('tab-body').innerHTML = `
+        <div class="field">
+          <label>Username</label>
+          <input id="e-username" value="${API.escapeHtml(u.username)}" />
+        </div>
+        <div class="field">
+          <label>Role</label>
+          <select id="e-role">
+            <option value="viewer" ${u.role === 'viewer' ? 'selected' : ''}>Viewer</option>
+            <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Admin</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Reset Password</label>
+          <input id="e-password" type="password" placeholder="Leave blank to keep unchanged" />
+        </div>
+        <div class="small text-muted mb-2">Created ${API.timeAgo(u.createdAt)} · Last login ${u.lastLogin ? API.timeAgo(u.lastLogin) : 'never'}</div>
+        <button class="primary" id="e-save">Save Changes</button>
+      `;
+      document.getElementById('e-save').onclick = async () => {
+        const payload = {
+          username: document.getElementById('e-username').value.trim(),
+          role: document.getElementById('e-role').value,
+        };
+        const pw = document.getElementById('e-password').value;
+        if (pw) payload.password = pw;
+        try {
+          await API.apiFetch(`/api/users/${u.id}`, { method: 'PUT', body: payload });
+          await refreshUsers();
+          renderDetail();
+        } catch (e) { alert(e.message); }
+      };
+    }
+
+    async function renderAccessTab(u) {
+      const tb = document.getElementById('tab-body');
+      if (u.role === 'admin') {
+        tb.innerHTML = `<div class="banner info">Admin users have access to all containers on all servers.</div>`;
+        return;
+      }
+      if (!servers.length) {
+        tb.innerHTML = `<div class="empty-state" style="padding:20px;">No servers configured</div>`;
+        return;
+      }
+
+      if (!draftAssignments) {
+        draftAssignments = new Set((u.assignedContainers || []).map(a => `${a.serverId}:${a.containerId}`));
+      }
+      if (!activeServerTab || !servers.find(s => s.id === activeServerTab)) {
+        activeServerTab = servers[0].id;
+      }
+
+      tb.innerHTML = `
+        <div class="server-tabs" id="srv-tabs">
+          ${servers.map(s => `
+            <div class="stab ${activeServerTab === s.id ? 'active' : ''}" data-sid="${s.id}">
+              <span class="dot ${s.status || 'unknown'}"></span>
+              ${API.escapeHtml(s.name)}
+              <span class="badge ${s.type}">${s.type.toUpperCase()}</span>
+            </div>`).join('')}
+        </div>
+        <div id="srv-pane" class="mt-2"></div>
+        <div class="flex gap-1 mt-2" style="align-items:center;">
+          <div class="small text-muted" id="assignment-counter"></div>
+          <div style="flex:1"></div>
+          <button id="a-reset">Reset</button>
+          <button class="primary" id="a-save">Save Access</button>
+        </div>
+      `;
+
+      document.querySelectorAll('#srv-tabs .stab').forEach(st => {
+        st.onclick = () => { activeServerTab = st.dataset.sid; renderAccessTab(u); };
+      });
+
+      document.getElementById('a-reset').onclick = () => {
+        draftAssignments = new Set((u.assignedContainers || []).map(a => `${a.serverId}:${a.containerId}`));
+        renderAccessTab(u);
+      };
+      document.getElementById('a-save').onclick = async () => {
+        const assignments = Array.from(draftAssignments).map(k => {
+          const [serverId, containerId] = k.split(':');
+          return { serverId, containerId };
+        });
+        try {
+          await API.apiFetch(`/api/users/${u.id}/containers`, { method: 'PUT', body: { assignments } });
+          draftAssignments = null;
+          await refreshUsers();
+          renderDetail();
+        } catch (e) { alert(e.message); }
+      };
+
+      updateCounter();
+      await renderServerPane();
+    }
+
+    function updateCounter() {
+      const el = document.getElementById('assignment-counter');
+      if (!el) return;
+      const byServer = {};
+      draftAssignments.forEach(k => {
+        const sid = k.split(':')[0];
+        byServer[sid] = (byServer[sid] || 0) + 1;
+      });
+      const serverCount = Object.keys(byServer).length;
+      const total = draftAssignments.size;
+      el.textContent = `${total} containers assigned across ${serverCount} server${serverCount === 1 ? '' : 's'}`;
+    }
+
+    async function renderServerPane() {
+      const pane = document.getElementById('srv-pane');
+      pane.innerHTML = `<div class="empty-state" style="padding:16px;">Loading containers…</div>`;
+      const s = servers.find(x => x.id === activeServerTab);
+      if (!s) { pane.innerHTML = ''; return; }
+      if (s.status !== 'connected') {
+        pane.innerHTML = `<div class="banner">Server "${API.escapeHtml(s.name)}" is ${s.status}. Assignments are kept but containers cannot be listed right now.</div>`;
+        return;
+      }
+      const containers = await getContainersForServer(s.id);
+      if (!containers.length) {
+        pane.innerHTML = `<div class="empty-state" style="padding:16px;">No containers on this server</div>`;
+        return;
+      }
+      pane.innerHTML = `
+        <div class="checklist">
+          ${containers.map(c => {
+            const k = `${s.id}:${c.id}`;
+            const checked = draftAssignments.has(k) ? 'checked' : '';
+            return `
+              <label class="item">
+                <input type="checkbox" data-k="${k}" ${checked} />
+                <div style="flex:1;min-width:0;">
+                  <div>${API.escapeHtml(c.name)} <span class="state ${c.state}">${c.state}</span></div>
+                  <div class="meta">${API.escapeHtml(c.image)} · ${API.escapeHtml(c.shortId)}</div>
+                </div>
+              </label>
+            `;
+          }).join('')}
+        </div>
+      `;
+      pane.querySelectorAll('input[type=checkbox]').forEach(cb => {
+        cb.onchange = () => {
+          if (cb.checked) draftAssignments.add(cb.dataset.k);
+          else draftAssignments.delete(cb.dataset.k);
+          updateCounter();
+        };
+      });
+    }
+
+    function openCreateModal() {
+      modalMode = 'create';
+      document.getElementById('modal-title').textContent = 'New User';
+      document.getElementById('m-username').value = '';
+      document.getElementById('m-password').value = '';
+      document.getElementById('m-password-hint').textContent = '';
+      document.getElementById('m-role').value = 'viewer';
+      document.getElementById('m-error').textContent = '';
+      document.getElementById('modal').classList.remove('hidden');
+    }
+    function closeModal() { document.getElementById('modal').classList.add('hidden'); }
+
+    async function saveModal() {
+      const username = document.getElementById('m-username').value.trim();
+      const password = document.getElementById('m-password').value;
+      const role = document.getElementById('m-role').value;
+      const err = document.getElementById('m-error');
+      err.textContent = '';
+      if (!username || !password) { err.textContent = 'Username and password required'; return; }
+      try {
+        await API.apiFetch('/api/users', { method: 'POST', body: { username, password, role } });
+        closeModal();
+        await refreshUsers();
+      } catch (e) {
+        err.textContent = e.message;
+      }
+    }
+
+    boot();
+  </script>
+</body>
+</html>

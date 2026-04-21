@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <title>Docker Dashboard — Servers</title>
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="app-header">
+      <div class="logo">&gt; DOCKER<span class="logo-sub">_DASHBOARD</span></div>
+      <div class="spacer"></div>
+      <nav id="main-nav" class="flex gap-1"></nav>
+      <div id="user-area" class="flex gap-1"></div>
+    </header>
+
+    <div class="page-wrap two-col">
+      <div class="panel">
+        <div class="panel-header">
+          <div class="title">Servers</div>
+          <div class="spacer"></div>
+          <button class="primary" id="new-btn">+ Add Server</button>
+        </div>
+        <div class="panel-body no-pad" id="server-list"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <div class="title" id="form-title">Add Server</div>
+          <div class="spacer"></div>
+          <button class="ghost hidden" id="cancel-edit">Cancel</button>
+        </div>
+        <div class="panel-body" id="form-panel">
+          <!-- filled dynamically -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/api.js"></script>
+  <script>
+    if (!API.requireAuth()) throw new Error('redirecting');
+
+    let servers = [];
+    let editingId = null; // null = create; 'local' means viewing local
+    let lastTest = null;
+
+    async function boot() {
+      const user = await API.loadCurrentUser();
+      if (!user || user.role !== 'admin') {
+        location.href = '/index.html';
+        return;
+      }
+      API.renderUserBadge(document.getElementById('user-area'));
+      API.renderAdminNav(document.getElementById('main-nav'));
+      await refresh();
+      renderForm();
+      document.getElementById('new-btn').onclick = () => { editingId = null; lastTest = null; renderForm(); };
+      document.getElementById('cancel-edit').onclick = () => { editingId = null; lastTest = null; renderForm(); };
+      setInterval(refresh, 15000);
+    }
+
+    async function refresh() {
+      const { servers: list } = await API.apiFetch('/api/servers');
+      servers = list;
+      renderList();
+    }
+
+    function renderList() {
+      const local = servers.find(s => s.type === 'local');
+      const remote = servers.filter(s => s.type === 'remote');
+      const el = document.getElementById('server-list');
+      let html = '';
+      if (local) html += renderCard(local);
+      remote.forEach(s => { html += renderCard(s); });
+      if (!local && !remote.length) {
+        html = `<div class="empty-state" style="padding:30px;">No servers yet</div>`;
+      }
+      el.innerHTML = html;
+      el.querySelectorAll('[data-test]').forEach(b => b.onclick = async (e) => {
+        e.stopPropagation();
+        b.disabled = true; b.textContent = 'Testing…';
+        try { await API.apiFetch(`/api/servers/${b.dataset.test}/test`, { method: 'POST' }); }
+        catch (_) {}
+        await refresh();
+      });
+      el.querySelectorAll('[data-edit]').forEach(b => b.onclick = (e) => {
+        e.stopPropagation();
+        editingId = b.dataset.edit;
+        lastTest = null;
+        renderForm();
+      });
+      el.querySelectorAll('[data-delete]').forEach(b => b.onclick = async (e) => {
+        e.stopPropagation();
+        const id = b.dataset.delete;
+        const s = servers.find(x => x.id === id);
+        if (!confirm(`Delete server "${s.name}"? All container assignments for this server will be removed.`)) return;
+        try {
+          await API.apiFetch(`/api/servers/${id}`, { method: 'DELETE' });
+          if (editingId === id) { editingId = null; renderForm(); }
+          await refresh();
+        } catch (ex) { alert(ex.message); }
+      });
+    }
+
+    function renderCard(s) {
+      const icon = s.type === 'local' ? '🖥' : '🌐';
+      const statusText = s.status === 'connected' ? 'Connected'
+        : s.status === 'error' ? 'Error'
+        : 'Unknown';
+      const meta = s.type === 'local'
+        ? '/var/run/docker.sock'
+        : `${API.escapeHtml(s.host || '')}:${s.port || ''}${s.tls ? ' · TLS' : ''}`;
+      const info = s.status === 'connected' && s.version
+        ? `Docker ${API.escapeHtml(s.version)} · ${API.escapeHtml(s.os || '')} · ${typeof s.containerCount === 'number' ? s.containerCount : 0} containers`
+        : (s.errorMessage ? `<span style="color:var(--danger)">${API.escapeHtml(s.errorMessage)}</span>` : '');
+      const actions = s.type === 'local' ? '' : `
+        <div class="card-actions">
+          <button data-test="${s.id}">Test</button>
+          <button data-edit="${s.id}">Edit</button>
+          <button class="danger" data-delete="${s.id}">Delete</button>
+        </div>`;
+      return `
+        <div class="server-card ${s.type === 'local' ? 'local' : ''} ${editingId === s.id ? 'selected' : ''}">
+          <div class="row1">
+            <span>${icon}</span>
+            <span class="name">${API.escapeHtml(s.name)}</span>
+            <span class="badge ${s.type}">${s.type.toUpperCase()}</span>
+            <div style="flex:1"></div>
+            <span class="dot ${s.status || 'unknown'}"></span>
+            <span class="small text-muted">${statusText}</span>
+          </div>
+          <div class="meta">${meta}</div>
+          <div class="meta">${info || '&nbsp;'}</div>
+          <div class="meta">Checked ${API.timeAgo(s.lastChecked)}</div>
+          ${actions}
+        </div>
+      `;
+    }
+
+    function renderForm() {
+      const panel = document.getElementById('form-panel');
+      const title = document.getElementById('form-title');
+      const cancel = document.getElementById('cancel-edit');
+
+      if (editingId) {
+        const s = servers.find(x => x.id === editingId);
+        if (!s) { editingId = null; return renderForm(); }
+        if (s.type === 'local') {
+          title.textContent = 'Local Server (read-only)';
+          cancel.classList.remove('hidden');
+          panel.innerHTML = `
+            <div class="text-muted small mb-2">Auto-detected from /var/run/docker.sock. Always available when the socket is mounted — cannot be edited or deleted.</div>
+            <div class="info-box">
+              <div>Status: <span class="dot ${s.status}"></span> ${s.status}</div>
+              ${s.version ? `<div class="mt-1">Docker ${API.escapeHtml(s.version)} · ${API.escapeHtml(s.os || '')}</div>` : ''}
+              ${typeof s.containerCount === 'number' ? `<div>${s.containerCount} containers</div>` : ''}
+              <div class="mt-1">Last checked ${API.timeAgo(s.lastChecked)}</div>
+            </div>
+          `;
+          return;
+        }
+        title.textContent = `Edit: ${s.name}`;
+        cancel.classList.remove('hidden');
+      } else {
+        title.textContent = 'Add Server';
+        cancel.classList.add('hidden');
+      }
+
+      const s = editingId ? servers.find(x => x.id === editingId) : null;
+      panel.innerHTML = `
+        <div class="field">
+          <label>Display Name</label>
+          <input id="f-name" value="${s ? API.escapeHtml(s.name) : ''}" placeholder="e.g. Production EU" />
+        </div>
+        <div class="field-row">
+          <div class="field" style="flex:2">
+            <label>Host / IP</label>
+            <input id="f-host" value="${s ? API.escapeHtml(s.host || '') : ''}" placeholder="192.168.1.100 or docker.example.com" />
+          </div>
+          <div class="field">
+            <label>Port</label>
+            <input id="f-port" type="number" value="${s ? (s.port || '') : 2375}" />
+          </div>
+        </div>
+        <div class="field flex gap-1" style="align-items:center;">
+          <input type="checkbox" id="f-tls" style="width:auto" ${s && s.tls ? 'checked' : ''} />
+          <label for="f-tls" style="margin:0;text-transform:none;letter-spacing:0;font-size:12px;color:var(--fg);">Use TLS (recommended for production)</label>
+        </div>
+        <div id="tls-fields" class="${s && s.tls ? '' : 'hidden'}">
+          <div class="field">
+            <label>TLS Certificate (cert.pem)</label>
+            <textarea id="f-cert" placeholder="-----BEGIN CERTIFICATE-----...">${s && s.hasTlsCert ? '(existing cert — paste to replace)' : ''}</textarea>
+          </div>
+          <div class="field">
+            <label>TLS Key (key.pem)</label>
+            <textarea id="f-key" placeholder="-----BEGIN PRIVATE KEY-----...">${s && s.hasTlsKey ? '(existing key — paste to replace)' : ''}</textarea>
+          </div>
+          <div class="field">
+            <label>CA Certificate (ca.pem)</label>
+            <textarea id="f-ca" placeholder="-----BEGIN CERTIFICATE-----...">${s && s.hasTlsCa ? '(existing CA — paste to replace)' : ''}</textarea>
+          </div>
+        </div>
+
+        <div class="flex gap-1 mt-1">
+          <button id="test-btn">Test Connection</button>
+          <button class="primary" id="save-btn" ${editingId ? '' : 'disabled'}>${editingId ? 'Update' : 'Save'}</button>
+        </div>
+        <div id="test-result"></div>
+
+        ${renderInfoBox()}
+      `;
+
+      const tls = document.getElementById('f-tls');
+      tls.onchange = () => {
+        document.getElementById('tls-fields').classList.toggle('hidden', !tls.checked);
+        const port = document.getElementById('f-port');
+        if (tls.checked && (port.value === '2375' || !port.value)) port.value = 2376;
+        else if (!tls.checked && port.value === '2376') port.value = 2375;
+      };
+
+      document.getElementById('test-btn').onclick = testConnection;
+      document.getElementById('save-btn').onclick = saveServer;
+
+      panel.querySelectorAll('.info-toggle').forEach(t => t.onclick = () => {
+        const body = t.parentElement.querySelector('.info-body');
+        body.classList.toggle('hidden');
+      });
+    }
+
+    function renderInfoBox() {
+      return `
+        <div class="info-box mt-2">
+          <div class="info-title info-toggle">▸ How to enable Docker TCP API on your remote server</div>
+          <div class="info-body hidden">
+            <div class="mt-1"><strong>Option A — Temporary (for testing):</strong></div>
+            <pre>dockerd -H unix:///var/run/docker.sock -H tcp://0.0.0.0:2375</pre>
+
+            <div class="mt-1"><strong>Option B — Permanent (systemd override):</strong></div>
+            <pre>sudo mkdir -p /etc/systemd/system/docker.service.d/
+sudo nano /etc/systemd/system/docker.service.d/override.conf</pre>
+            <div>Paste:</div>
+            <pre>[Service]
+ExecStart=
+ExecStart=/usr/bin/dockerd -H unix:///var/run/docker.sock -H tcp://0.0.0.0:2375</pre>
+            <pre>sudo systemctl daemon-reload
+sudo systemctl restart docker</pre>
+
+            <div class="mt-1"><strong>Option C — TLS (recommended for production):</strong></div>
+            <div>Generate CA + server + client certs per the Docker docs
+              (<a href="https://docs.docker.com/engine/security/protect-access/" target="_blank">docs.docker.com/engine/security/protect-access</a>),
+              then run dockerd with <code>--tlsverify --tlscacert=ca.pem --tlscert=server-cert.pem --tlskey=server-key.pem -H tcp://0.0.0.0:2376</code>.
+              Paste the client cert/key/CA into this form.</div>
+
+            <div class="mt-1"><strong>Firewall:</strong></div>
+            <pre>sudo ufw allow 2375/tcp   # or 2376 for TLS</pre>
+            <div class="warn">⚠ Never expose port 2375 (plaintext) on a public server. Use TLS or restrict to trusted IPs:
+              <code>sudo ufw allow from YOUR_IP to any port 2375</code></div>
+          </div>
+        </div>
+      `;
+    }
+
+    function gatherForm() {
+      const tls = document.getElementById('f-tls').checked;
+      const cert = document.getElementById('f-cert')?.value || '';
+      const key = document.getElementById('f-key')?.value || '';
+      const ca = document.getElementById('f-ca')?.value || '';
+      const isPlaceholder = v => v.startsWith('(existing ');
+      return {
+        name: document.getElementById('f-name').value.trim(),
+        host: document.getElementById('f-host').value.trim(),
+        port: Number(document.getElementById('f-port').value) || (tls ? 2376 : 2375),
+        tls,
+        tlsCert: tls && cert && !isPlaceholder(cert) ? cert : undefined,
+        tlsKey: tls && key && !isPlaceholder(key) ? key : undefined,
+        tlsCa: tls && ca && !isPlaceholder(ca) ? ca : undefined,
+      };
+    }
+
+    async function testConnection() {
+      const result = document.getElementById('test-result');
+      result.innerHTML = `<div class="result-card" style="border-left-color:var(--info);background:rgba(94,194,255,0.08);color:var(--info)">Testing…</div>`;
+      const data = gatherForm();
+      if (!data.host) {
+        result.innerHTML = `<div class="result-card err">✗ Host is required</div>`;
+        return;
+      }
+      try {
+        let res;
+        if (editingId) {
+          // Save draft then run a dedicated test via /:id/test after updating
+          // Simpler: use ephemeral POST /api/servers/test with current form
+          res = await API.apiFetch('/api/servers/test', { method: 'POST', body: data });
+        } else {
+          res = await API.apiFetch('/api/servers/test', { method: 'POST', body: data });
+        }
+        lastTest = res;
+        if (res.ok) {
+          result.innerHTML = `<div class="result-card ok">✓ Connected — Docker ${API.escapeHtml(res.version || '?')} · ${API.escapeHtml(res.os || '')} · ${res.containers} containers</div>`;
+          document.getElementById('save-btn').disabled = false;
+        } else {
+          result.innerHTML = `<div class="result-card err">✗ Failed — ${API.escapeHtml(res.error || 'Unknown error')}</div>`;
+        }
+      } catch (e) {
+        result.innerHTML = `<div class="result-card err">✗ ${API.escapeHtml(e.message)}</div>`;
+      }
+    }
+
+    async function saveServer() {
+      const data = gatherForm();
+      if (!data.name || !data.host) {
+        alert('Name and host are required');
+        return;
+      }
+      const btn = document.getElementById('save-btn');
+      btn.disabled = true;
+      try {
+        if (editingId) {
+          await API.apiFetch(`/api/servers/${editingId}`, { method: 'PUT', body: data });
+        } else {
+          const res = await API.apiFetch('/api/servers', { method: 'POST', body: data });
+          editingId = res.server.id;
+        }
+        await refresh();
+        renderForm();
+      } catch (e) {
+        alert(e.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    boot();
+  </script>
+</body>
+</html>

@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <title>Docker Dashboard</title>
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="app-header">
+      <div class="logo">&gt; DOCKER<span class="logo-sub">_DASHBOARD</span></div>
+
+      <div class="server-switcher" id="server-switcher">
+        <div class="current" id="server-current">
+          <span class="dot unknown"></span>
+          <div style="flex:1">
+            <div class="name" id="sc-name">Loading…</div>
+            <div class="small text-muted" id="sc-meta"></div>
+          </div>
+          <span class="text-muted">▾</span>
+        </div>
+        <div class="dropdown hidden" id="server-dropdown"></div>
+      </div>
+
+      <div class="spacer"></div>
+      <nav id="main-nav" class="flex gap-1"></nav>
+      <div id="user-area" class="flex gap-1"></div>
+    </header>
+
+    <div class="app-body">
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <div class="title">
+            <span class="dot unknown" id="sb-dot"></span>
+            <span id="sb-server-name">—</span>
+          </div>
+          <div class="sub" id="sb-server-sub">0 containers</div>
+        </div>
+        <div class="sidebar-search">
+          <input id="search" placeholder="Search containers…" />
+        </div>
+        <div id="server-banner"></div>
+        <div class="sidebar-list" id="container-list">
+          <div class="empty-state" style="padding:24px;">Loading…</div>
+        </div>
+      </aside>
+
+      <main class="main-panel" id="main-panel">
+        <div class="empty-state">
+          <div class="icon">⎔</div>
+          <div>Select a container to view details</div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script src="/js/api.js"></script>
+  <script>
+    if (!API.requireAuth()) throw new Error('redirecting');
+
+    let servers = [];
+    let selectedServerId = localStorage.getItem('dd_selected_server');
+    let containers = [];
+    let selectedContainerId = null;
+    let logStream = null;
+    let statusStream = null;
+
+    async function boot() {
+      await API.loadCurrentUser();
+      API.renderUserBadge(document.getElementById('user-area'));
+      API.renderAdminNav(document.getElementById('main-nav'));
+
+      await refreshServers();
+      startStatusStream();
+
+      document.getElementById('server-current').onclick = () => {
+        document.getElementById('server-dropdown').classList.toggle('hidden');
+      };
+      document.addEventListener('click', (e) => {
+        const sw = document.getElementById('server-switcher');
+        if (!sw.contains(e.target)) document.getElementById('server-dropdown').classList.add('hidden');
+      });
+
+      document.getElementById('search').addEventListener('input', renderContainers);
+
+      // periodic container refresh
+      setInterval(() => { if (selectedServerId) loadContainers(); }, 10000);
+    }
+
+    async function refreshServers() {
+      try {
+        const { servers: list } = await API.apiFetch('/api/servers');
+        servers = list;
+        if (!selectedServerId || !servers.find(s => s.id === selectedServerId)) {
+          const conn = servers.find(s => s.status === 'connected') || servers[0];
+          selectedServerId = conn ? conn.id : null;
+          if (selectedServerId) localStorage.setItem('dd_selected_server', selectedServerId);
+        }
+        renderServerSwitcher();
+        renderSidebarHeader();
+        if (selectedServerId) await loadContainers();
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function renderServerSwitcher() {
+      const current = servers.find(s => s.id === selectedServerId);
+      if (!current) {
+        document.getElementById('sc-name').textContent = 'No servers';
+        document.getElementById('sc-meta').textContent = '';
+        document.getElementById('server-current').querySelector('.dot').className = 'dot unknown';
+      } else {
+        document.getElementById('sc-name').innerHTML = `${API.escapeHtml(current.name)} <span class="badge ${current.type}">${current.type.toUpperCase()}</span>`;
+        const meta = current.status === 'connected' && current.version
+          ? `Docker ${API.escapeHtml(current.version)} · ${API.escapeHtml(current.os || '')}`
+          : current.type === 'remote' ? `${API.escapeHtml(current.host || '')}:${current.port || ''}` : '/var/run/docker.sock';
+        document.getElementById('sc-meta').textContent = meta;
+        document.getElementById('server-current').querySelector('.dot').className = `dot ${current.status || 'unknown'}`;
+      }
+
+      const dd = document.getElementById('server-dropdown');
+      if (!servers.length) {
+        dd.innerHTML = `<div class="item"><div class="info"><div class="name text-muted">No servers configured</div></div></div>`;
+        return;
+      }
+      dd.innerHTML = servers.map(s => `
+        <div class="item ${s.id === selectedServerId ? 'selected' : ''}" data-id="${s.id}">
+          <span class="dot ${s.status || 'unknown'}"></span>
+          <div class="info">
+            <div class="name">${API.escapeHtml(s.name)} <span class="badge ${s.type}">${s.type.toUpperCase()}</span></div>
+            <div class="meta">${
+              s.type === 'local' ? 'Local socket' :
+              `${API.escapeHtml(s.host || '')}:${s.port || ''}${s.tls ? ' · TLS' : ''}`
+            } · ${s.status || 'unknown'}${typeof s.containerCount === 'number' ? ` · ${s.containerCount} containers` : ''}</div>
+          </div>
+        </div>
+      `).join('');
+      dd.querySelectorAll('.item').forEach(el => {
+        el.onclick = () => {
+          selectedServerId = el.dataset.id;
+          localStorage.setItem('dd_selected_server', selectedServerId);
+          selectedContainerId = null;
+          dd.classList.add('hidden');
+          renderServerSwitcher();
+          renderSidebarHeader();
+          renderDetail(null);
+          loadContainers();
+        };
+      });
+    }
+
+    function renderSidebarHeader() {
+      const s = servers.find(x => x.id === selectedServerId);
+      document.getElementById('sb-dot').className = `dot ${s?.status || 'unknown'}`;
+      document.getElementById('sb-server-name').textContent = s?.name || '—';
+      document.getElementById('sb-server-sub').textContent = s
+        ? `${typeof s.containerCount === 'number' ? s.containerCount : 0} containers${s.status === 'connected' && s.version ? ` · Docker ${s.version}` : ''}`
+        : '';
+
+      const banner = document.getElementById('server-banner');
+      if (s && s.status === 'error') {
+        banner.innerHTML = `<div class="banner">Server unreachable. Last checked ${API.timeAgo(s.lastChecked)}.${s.errorMessage ? '<br>' + API.escapeHtml(s.errorMessage) : ''}</div>`;
+      } else if (s && s.status === 'unknown') {
+        banner.innerHTML = `<div class="banner warn">Checking connection…</div>`;
+      } else {
+        banner.innerHTML = '';
+      }
+    }
+
+    async function loadContainers() {
+      if (!selectedServerId) return;
+      try {
+        const { containers: list } = await API.apiFetch(`/api/servers/${selectedServerId}/containers`);
+        containers = list;
+        renderContainers();
+      } catch (e) {
+        containers = [];
+        renderContainers();
+        document.getElementById('container-list').innerHTML =
+          `<div class="empty-state" style="padding:24px;">${API.escapeHtml(e.message)}</div>`;
+      }
+    }
+
+    function renderContainers() {
+      const q = document.getElementById('search').value.toLowerCase().trim();
+      const list = containers.filter(c =>
+        !q || c.name.toLowerCase().includes(q) || c.image.toLowerCase().includes(q) || c.shortId.toLowerCase().includes(q)
+      );
+      const el = document.getElementById('container-list');
+      if (!list.length) {
+        el.innerHTML = `<div class="empty-state" style="padding:24px;">No containers</div>`;
+        return;
+      }
+      el.innerHTML = list.map(c => `
+        <div class="container-item ${c.id === selectedContainerId ? 'selected' : ''}" data-id="${c.id}">
+          <div class="info">
+            <div class="name">${API.escapeHtml(c.name)}</div>
+            <div class="image">${API.escapeHtml(c.image)}</div>
+          </div>
+          <span class="state ${c.state}">${c.state}</span>
+        </div>
+      `).join('');
+      el.querySelectorAll('.container-item').forEach(n => {
+        n.onclick = () => {
+          selectedContainerId = n.dataset.id;
+          renderContainers();
+          renderDetail(containers.find(c => c.id === selectedContainerId));
+        };
+      });
+    }
+
+    function renderDetail(container) {
+      const mp = document.getElementById('main-panel');
+      if (logStream) { logStream.close(); logStream = null; }
+      if (!container) {
+        mp.innerHTML = `<div class="empty-state"><div class="icon">⎔</div><div>Select a container to view details</div></div>`;
+        return;
+      }
+      mp.innerHTML = `
+        <div class="detail-header">
+          <div>
+            <div class="title">${API.escapeHtml(container.name)} <span class="state ${container.state}">${container.state}</span></div>
+            <div class="sub">${API.escapeHtml(container.image)} · ${API.escapeHtml(container.shortId)}</div>
+          </div>
+          <div class="detail-actions">
+            <button id="act-start" ${container.state === 'running' ? 'disabled' : ''}>Start</button>
+            <button id="act-stop" ${container.state !== 'running' ? 'disabled' : ''}>Stop</button>
+            <button id="act-restart">Restart</button>
+          </div>
+        </div>
+        <div class="tabs">
+          <div class="tab active" data-tab="logs">Logs</div>
+          <div class="tab" data-tab="inspect">Inspect</div>
+        </div>
+        <div class="tab-content">
+          <div class="tab-pane active" id="pane-logs">
+            <div class="logs-view" id="logs"></div>
+          </div>
+          <div class="tab-pane" id="pane-inspect">
+            <div class="inspect-view"><pre id="inspect">Loading…</pre></div>
+          </div>
+        </div>
+      `;
+      mp.querySelectorAll('.tab').forEach(t => {
+        t.onclick = () => {
+          mp.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+          mp.querySelectorAll('.tab-pane').forEach(x => x.classList.remove('active'));
+          t.classList.add('active');
+          document.getElementById(`pane-${t.dataset.tab}`).classList.add('active');
+          if (t.dataset.tab === 'inspect') loadInspect(container.id);
+        };
+      });
+
+      document.getElementById('act-start').onclick = () => containerAction(container.id, 'start');
+      document.getElementById('act-stop').onclick = () => containerAction(container.id, 'stop');
+      document.getElementById('act-restart').onclick = () => containerAction(container.id, 'restart');
+
+      startLogStream(container.id);
+    }
+
+    async function containerAction(id, action) {
+      try {
+        await API.apiFetch(`/api/servers/${selectedServerId}/containers/${id}/${action}`, { method: 'POST' });
+        setTimeout(loadContainers, 500);
+      } catch (e) {
+        alert(`Action failed: ${e.message}`);
+      }
+    }
+
+    function startLogStream(id) {
+      const el = document.getElementById('logs');
+      el.textContent = '';
+      const token = API.getToken();
+      const url = `/api/servers/${selectedServerId}/containers/${id}/logs?token=${encodeURIComponent(token)}`;
+      logStream = new EventSource(url);
+      logStream.onmessage = (ev) => {
+        try {
+          const { line } = JSON.parse(ev.data);
+          const div = document.createElement('div');
+          div.className = 'log-line';
+          div.textContent = line;
+          el.appendChild(div);
+          if (el.childElementCount > 1000) el.removeChild(el.firstChild);
+          el.scrollTop = el.scrollHeight;
+        } catch (_) {}
+      };
+      logStream.addEventListener('error', () => {});
+    }
+
+    async function loadInspect(id) {
+      try {
+        const data = await API.apiFetch(`/api/servers/${selectedServerId}/containers/${id}/inspect`);
+        document.getElementById('inspect').textContent = JSON.stringify(data, null, 2);
+      } catch (e) {
+        document.getElementById('inspect').textContent = `Error: ${e.message}`;
+      }
+    }
+
+    function startStatusStream() {
+      if (statusStream) statusStream.close();
+      const token = API.getToken();
+      statusStream = new EventSource(`/api/servers/status/stream?token=${encodeURIComponent(token)}`);
+      statusStream.addEventListener('snapshot', (ev) => {
+        try {
+          const snap = JSON.parse(ev.data);
+          snap.forEach(applyStatus);
+        } catch (_) {}
+      });
+      statusStream.onmessage = (ev) => {
+        try { applyStatus(JSON.parse(ev.data)); } catch (_) {}
+      };
+    }
+
+    function applyStatus(payload) {
+      const s = servers.find(x => x.id === payload.serverId);
+      if (!s) { refreshServers(); return; }
+      s.status = payload.status;
+      s.lastChecked = payload.lastChecked;
+      s.errorMessage = payload.error;
+      renderServerSwitcher();
+      if (payload.serverId === selectedServerId) {
+        renderSidebarHeader();
+        if (payload.status === 'connected') loadContainers();
+      }
+    }
+
+    boot();
+  </script>
+</body>
+</html>

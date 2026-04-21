@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <title>Docker Dashboard — Login</title>
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-box">
+      <h1>&gt; DOCKER_DASHBOARD</h1>
+      <div class="sub">Sign in to continue</div>
+      <form id="login-form">
+        <div class="field">
+          <label for="u">Username</label>
+          <input id="u" name="username" autocomplete="username" required autofocus />
+        </div>
+        <div class="field">
+          <label for="p">Password</label>
+          <input id="p" type="password" name="password" autocomplete="current-password" required />
+        </div>
+        <button class="primary" type="submit" style="width:100%;padding:8px;">Sign In</button>
+        <div id="error" class="error"></div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/js/api.js"></script>
+  <script>
+    if (API.getToken()) location.href = '/index.html';
+
+    document.getElementById('login-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const err = document.getElementById('error');
+      err.textContent = '';
+      const username = document.getElementById('u').value.trim();
+      const password = document.getElementById('p').value;
+      try {
+        const res = await API.apiFetch('/api/auth/login', {
+          method: 'POST',
+          body: { username, password },
+        });
+        API.setToken(res.token);
+        API.setUser(res.user);
+        location.href = '/index.html';
+      } catch (ex) {
+        err.textContent = ex.message || 'Login failed';
+      }
+    });
+  </script>
+</body>
+</html>
