@@ -9,6 +9,7 @@ import { router as authRouter } from './auth.js';
 import serversRouter from './routes/servers.js';
 import dockerRouter from './routes/docker.js';
 import usersRouter from './routes/users.js';
+import { accessLogger, ipBlocklist, globalLimiter } from './security.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,8 +20,12 @@ async function main() {
   await init();
 
   const app = express();
+  app.set('trust proxy', process.env.TRUST_PROXY || 'loopback');
   app.use(cors());
   app.use(express.json({ limit: '2mb' }));
+  app.use(accessLogger());
+  app.use(ipBlocklist());
+  app.use('/api', globalLimiter);
 
   app.use('/api/auth', authRouter);
   app.use('/api/servers', serversRouter);

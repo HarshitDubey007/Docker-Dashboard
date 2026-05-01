@@ -23,6 +23,7 @@ A lightweight, self-hosted web dashboard for monitoring and managing Docker cont
 - [Connecting a remote Docker host](#connecting-a-remote-docker-host)
 - [API reference](#api-reference)
 - [Project structure](#project-structure)
+- [Daily maintenance & abuse protection](#daily-maintenance--abuse-protection)
 - [Troubleshooting](#troubleshooting)
 - [Security notes](#security-notes)
 - [Roadmap](#roadmap)
@@ -165,6 +166,17 @@ All configuration is via environment variables. In Docker deployments these come
 | `PORT` | no | `3000` | HTTP port the API listens on. |
 | `DATA_DIR` | no | `./data` (dev) / `/app/data` (Docker) | Directory for `db.json`. |
 | `DOCKER_GID` | yes (Docker only) | auto-detected | GID of the host `docker` group. Required so the non-root container user can read `/var/run/docker.sock`. Find it with `getent group docker \| cut -d: -f3`. |
+| `TRUST_PROXY` | no | `loopback` | Express `trust proxy` setting. Set to `1` (or a hop count) when running behind nginx/Cloudflare so `req.ip` resolves to the real client IP. |
+| `GLOBAL_RATE_MAX` | no | `300` | Max requests per IP per `GLOBAL_RATE_WINDOW_MS` on `/api/*`. |
+| `GLOBAL_RATE_WINDOW_MS` | no | `60000` | Rate-limit window in milliseconds. |
+| `DDOS_REQ_PER_DAY` | no | `10000` | Daily-maintenance scanner: block IPs exceeding this many requests in 24h. |
+| `DDOS_AUTH_FAIL_PER_DAY` | no | `50` | Block IPs exceeding this many `401` responses in 24h. |
+| `DDOS_RATE_LIMIT_HITS_PER_DAY` | no | `100` | Block IPs exceeding this many `429` responses in 24h. |
+| `BLOCK_TTL_HOURS` | no | `24` | How long a freshly-flagged IP stays blocked. |
+| `BLOCK_AT_HOST` | no | `0` | When `1`, the daily script also adds `iptables -j DROP` rules in the `DOCKER-USER` chain (Linux + root + iptables required). |
+| `PRUNE_VOLUMES` | no | `0` | When `1`, the daily script also runs `docker volume prune -f`. **Destructive** — only enable if no host containers rely on anonymous volumes. |
+| `ACCESS_LOG_MAX_BYTES` | no | `52428800` | Rotate `data/access.log` once it exceeds this size. |
+| `DASHBOARD_CONTAINER` | no | `docker-dashboard` | Container name the daily script `docker exec`s into to run the abuse scanner. |
 
 ### Regenerating `JWT_SECRET`
 
@@ -270,12 +282,17 @@ Docker-Dashboard/
 │   ├── server.js          # Express bootstrap
 │   ├── db.js              # lowdb store, bootstrap admin + local server
 │   ├── auth.js            # JWT + bcrypt, auth middleware, /api/auth routes
+│   ├── security.js        # Access logger, IP blocklist, global rate limiter
 │   ├── metrics.js         # Pure CPU / memory math (no I/O)
 │   ├── serverManager.js   # Per-server dockerode connection cache + polling
 │   └── routes/
 │       ├── servers.js     # CRUD + SSE status for remote servers
 │       ├── docker.js      # Per-server container endpoints + metrics SSE
 │       └── users.js       # User / role / container-assignment admin
+├── scripts/
+│   ├── daily-maintenance.sh   # Cron entrypoint: docker prune + abuse scan + iptables
+│   ├── install-cron.sh        # Registers the daily cron entry
+│   └── scan-access-log.mjs    # NDJSON access-log parser, refreshes blocklist.json
 ├── public/
 │   ├── index.html         # Main dashboard
 │   ├── login.html         # Auth
