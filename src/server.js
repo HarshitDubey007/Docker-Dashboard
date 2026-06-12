@@ -8,6 +8,7 @@ import serverManager from './serverManager.js';
 import { router as authRouter } from './auth.js';
 import serversRouter from './routes/servers.js';
 import dockerRouter from './routes/docker.js';
+import servicesRouter from './routes/services.js';
 import usersRouter from './routes/users.js';
 import { accessLogger, ipBlocklist, globalLimiter } from './security.js';
 
@@ -30,6 +31,7 @@ async function main() {
   app.use('/api/auth', authRouter);
   app.use('/api/servers', serversRouter);
   app.use('/api/servers/:serverId', dockerRouter);
+  app.use('/api/servers/:serverId', servicesRouter);
   app.use('/api/users', usersRouter);
 
   app.use(express.static(path.join(__dirname, '..', 'public')));

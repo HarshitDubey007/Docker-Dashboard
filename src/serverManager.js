@@ -1,11 +1,13 @@
 import Docker from 'dockerode';
 import { EventEmitter } from 'events';
 import { db, save } from './db.js';
+import { buildSources } from './sources/index.js';
 
 class ServerManager extends EventEmitter {
   constructor() {
     super();
     this.connections = new Map();
+    this.sources = new Map();
     this.pollInterval = null;
   }
 
@@ -41,8 +43,23 @@ class ServerManager extends EventEmitter {
     return this.getConnection(serverId);
   }
 
+  // Returns the cached map of service sources ({ docker, pm2?, systemd? }) for a
+  // server. Cached because stateful sources (systemd keeps CPU samples between
+  // list() calls to derive a percentage) must persist across requests.
+  getSourcesForServer(serverId) {
+    if (this.sources.has(serverId)) return this.sources.get(serverId);
+    const server = db.data.servers.find((s) => s.id === serverId);
+    if (!server) throw new Error(`Server ${serverId} not found`);
+    const docker = this.getConnection(serverId);
+    const built = buildSources(server, docker);
+    this.sources.set(serverId, built);
+    return built;
+  }
+
   invalidateConnection(serverId) {
     this.connections.delete(serverId);
+    // Sources hold a reference to the docker connection, so drop them too.
+    this.sources.delete(serverId);
   }
 
   async testConnection(serverId, { persist = true, ephemeralConfig = null } = {}) {
