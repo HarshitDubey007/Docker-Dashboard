@@ -89,7 +89,7 @@ A lightweight, self-hosted web dashboard for monitoring and managing Docker cont
 
 ```bash
 # 1. Clone
-git clone https://github.com/<your-org>/Docker-Dashboard.git
+git clone https://github.com/HarshitDubey007/Docker-Dashboard.git
 cd Docker-Dashboard
 
 # 2. One-shot deploy (generates .env, detects docker GID, fixes perms, builds, starts)
@@ -136,7 +136,7 @@ Useful when hacking on the code without rebuilding a Docker image every time.
 
 ```bash
 # 1. Clone & install
-git clone https://github.com/<your-org>/Docker-Dashboard.git
+git clone https://github.com/HarshitDubey007/Docker-Dashboard.git
 cd Docker-Dashboard
 npm install
 
@@ -567,7 +567,7 @@ Contributions are very welcome — from typo fixes to whole features. Here's the
 ### 1. Set up for development
 
 ```bash
-git clone https://github.com/<your-org>/Docker-Dashboard.git
+git clone https://github.com/HarshitDubey007/Docker-Dashboard.git
 cd Docker-Dashboard
 npm install
 cp .env.example .env

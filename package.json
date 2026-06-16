@@ -1,9 +1,29 @@
 {
   "name": "docker-dashboard",
   "version": "1.0.0",
-  "description": "Full-stack Docker monitoring dashboard with multi-server support",
+  "description": "Self-hosted, zero-build web dashboard to monitor and control Docker containers, PM2 apps, and systemd services across multiple servers",
   "main": "src/server.js",
   "type": "module",
+  "license": "MIT",
+  "author": "Harshit Dubey",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/HarshitDubey007/Docker-Dashboard.git"
+  },
+  "homepage": "https://github.com/HarshitDubey007/Docker-Dashboard#readme",
+  "bugs": {
+    "url": "https://github.com/HarshitDubey007/Docker-Dashboard/issues"
+  },
+  "keywords": [
+    "docker",
+    "dashboard",
+    "pm2",
+    "systemd",
+    "monitoring",
+    "containers",
+    "self-hosted",
+    "devops"
+  ],
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js"
