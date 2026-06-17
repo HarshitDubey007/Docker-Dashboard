@@ -147,7 +147,12 @@ git pull
 docker compose up -d --build
 ```
 
-Your data in `./data/db.json` is preserved across rebuilds.
+Your data lives in the Docker named volume `dashboard-data` and is preserved across rebuilds. To back it up or inspect it:
+
+```bash
+docker compose cp dashboard:/app/data/db.json ./db.backup.json   # copy out
+docker run --rm -v docker-dashboard_dashboard-data:/d alpine ls -l /d   # list volume
+```
 
 ---
 
@@ -547,12 +552,15 @@ sudo iptables -D DOCKER-USER -s <ip> -j DROP
 
 ### `EACCES: permission denied, open '/app/data/.db.json.tmp'`
 
-The bind-mounted `./data` on the host is owned by root; the container runs as UID 1001.
+The container (UID 1001) can't write its data dir. As of the named-volume setup this shouldn't happen in Docker mode. If you still see it, you're likely on an **older bind-mount setup** or a **stale local image** — pull the latest `docker-compose.yml` and recreate so the `dashboard-data` volume is used:
 
 ```bash
-sudo chown -R 1001:1001 ./data
-docker compose up -d --force-recreate
+git pull
+docker compose down
+docker compose up -d --build
 ```
+
+If you intentionally bind-mount a host `./data` (instead of the named volume), make it writable by UID 1001 — on Linux: `sudo chown -R 1001:1001 ./data`. On **macOS Docker Desktop** host chowns don't translate reliably, so prefer the named volume (the default).
 
 ### `502 Bad Gateway` from `/api/servers/local/containers`
 

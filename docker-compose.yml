@@ -10,7 +10,11 @@ services:
       - "3006:3006"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./data:/app/data
+      # Named volume (not a host bind mount) so the container's non-root user
+      # (UID 1001) can always write — Docker seeds it from the image's /app/data,
+      # which is owned by that user. Avoids host-UID/permission issues entirely
+      # (esp. macOS Docker Desktop). Inspect/back it up via `docker compose cp`.
+      - dashboard-data:/app/data
     environment:
       PORT: 3006
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required — set it in .env}
@@ -27,3 +31,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+volumes:
+  dashboard-data:

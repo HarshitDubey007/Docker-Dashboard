@@ -76,27 +76,11 @@ else
   fi
 fi
 
-mkdir -p data
-# The container runs as UID 1001 (see Dockerfile). The host-side bind mount must
-# be writable by that UID, or the app dies at startup with:
-#   EACCES: permission denied, open '/app/data/.db.json.tmp'
-# GNU stat first, BSD/macOS stat as fallback.
-DATA_UID="$(stat -c '%u' data 2>/dev/null || stat -f '%u' data 2>/dev/null || echo "")"
-if [ "$DATA_UID" = "1001" ]; then
-  ok "data/ already owned by UID 1001"
-elif [ "$(id -u)" = "0" ]; then
-  chown -R 1001:1001 data
-  ok "data/ directory ready (chown 1001:1001)"
-elif command -v sudo >/dev/null 2>&1; then
-  log "data/ is not owned by UID 1001 and we're not root — fixing with sudo"
-  if sudo chown -R 1001:1001 data; then
-    ok "data/ directory ready (sudo chown 1001:1001)"
-  else
-    warn "Could not chown data/. If the container logs show EACCES on /app/data, run: sudo chown -R 1001:1001 data"
-  fi
-else
-  warn "Not root and sudo unavailable — can't chown data/. If the container logs show EACCES on /app/data, run: sudo chown -R 1001:1001 data"
-fi
+# Persistent data lives in the Docker named volume `dashboard-data` (see
+# docker-compose.yml), not a host bind mount — so there is no host-UID/permission
+# step here. The volume is seeded from the image's /app/data, owned by the app
+# user (UID 1001), so the container can always write it on any OS.
+ok "data persists in the 'dashboard-data' Docker volume (no host chown needed)"
 
 log "Building & starting container..."
 "${COMPOSE[@]}" up -d --build
