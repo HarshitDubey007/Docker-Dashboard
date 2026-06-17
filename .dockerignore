@@ -10,3 +10,5 @@ data/
 .DS_Store
 README.md
 deploy.sh
+scripts/daily-maintenance.sh
+scripts/install-cron.sh

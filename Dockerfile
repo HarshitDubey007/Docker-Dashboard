@@ -9,6 +9,7 @@ RUN npm install --omit=dev && npm cache clean --force
 
 COPY src ./src
 COPY public ./public
+COPY scripts/scan-access-log.mjs ./scripts/scan-access-log.mjs
 
 RUN mkdir -p /app/data && \
     addgroup -g 1001 -S app && \

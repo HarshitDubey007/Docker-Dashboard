@@ -28,6 +28,31 @@
       <div id="user-area" class="flex gap-1"></div>
     </header>
 
+    <div class="metrics-strip" id="metrics-strip">
+      <div class="metric-tile" id="tile-cpu">
+        <div class="mt-label">HOST CPU</div>
+        <div class="mt-value"><span id="mt-cpu-val">—</span><span class="mt-unit">%</span></div>
+        <div class="mt-bar"><div class="mt-bar-fill" id="mt-cpu-bar"></div></div>
+        <div class="mt-sub" id="mt-cpu-sub">—</div>
+      </div>
+      <div class="metric-tile" id="tile-mem">
+        <div class="mt-label">HOST MEMORY</div>
+        <div class="mt-value"><span id="mt-mem-val">—</span><span class="mt-unit">%</span></div>
+        <div class="mt-bar"><div class="mt-bar-fill" id="mt-mem-bar"></div></div>
+        <div class="mt-sub" id="mt-mem-sub">—</div>
+      </div>
+      <div class="metric-tile" id="tile-containers">
+        <div class="mt-label">CONTAINERS</div>
+        <div class="mt-value"><span id="mt-ct-running">—</span><span class="mt-unit">/ <span id="mt-ct-total">—</span></span></div>
+        <div class="mt-sub">running / total</div>
+      </div>
+      <div class="metric-tile" id="tile-docker">
+        <div class="mt-label">DOCKER</div>
+        <div class="mt-value-sm" id="mt-docker-ver">—</div>
+        <div class="mt-sub" id="mt-docker-os">—</div>
+      </div>
+    </div>
+
     <div class="app-body">
       <aside class="sidebar">
         <div class="sidebar-header">
@@ -65,6 +90,11 @@
     let selectedContainerId = null;
     let logStream = null;
     let statusStream = null;
+    let metricsStream = null;
+    let metricsServerId = null;
+    // Per-container ring buffer of samples. Map<containerId, Array<{ts, cpu, mem, memPct}>>
+    const SAMPLE_WINDOW = 150; // ~5 min at 2s cadence
+    const samplesByContainer = new Map();
 
     async function boot() {
       await API.loadCurrentUser();
@@ -86,6 +116,8 @@
 
       // periodic container refresh
       setInterval(() => { if (selectedServerId) loadContainers(); }, 10000);
+
+      if (selectedServerId) startMetricsStream(selectedServerId);
     }
 
     async function refreshServers() {
@@ -147,6 +179,7 @@
           renderSidebarHeader();
           renderDetail(null);
           loadContainers();
+          startMetricsStream(selectedServerId);
         };
       });
     }
@@ -199,7 +232,10 @@
             <div class="name">${API.escapeHtml(c.name)}</div>
             <div class="image">${API.escapeHtml(c.image)}</div>
           </div>
-          <span class="state ${c.state}">${c.state}</span>
+          <div class="ci-meta">
+            <canvas class="ci-spark" data-id="${c.id}" width="60" height="20"></canvas>
+            <span class="state ${c.state}">${c.state}</span>
+          </div>
         </div>
       `).join('');
       el.querySelectorAll('.container-item').forEach(n => {
@@ -209,6 +245,7 @@
           renderDetail(containers.find(c => c.id === selectedContainerId));
         };
       });
+      redrawSparklines();
     }
 
     function renderDetail(container) {
@@ -232,11 +269,30 @@
         </div>
         <div class="tabs">
           <div class="tab active" data-tab="logs">Logs</div>
+          <div class="tab" data-tab="metrics">Metrics</div>
           <div class="tab" data-tab="inspect">Inspect</div>
         </div>
         <div class="tab-content">
           <div class="tab-pane active" id="pane-logs">
             <div class="logs-view" id="logs"></div>
+          </div>
+          <div class="tab-pane" id="pane-metrics">
+            <div class="metrics-view">
+              <div class="chart-block">
+                <div class="chart-head">
+                  <div class="chart-title">CPU</div>
+                  <div class="chart-current" id="chart-cpu-cur">—</div>
+                </div>
+                <canvas class="chart-canvas" id="chart-cpu" height="140"></canvas>
+              </div>
+              <div class="chart-block">
+                <div class="chart-head">
+                  <div class="chart-title">Memory</div>
+                  <div class="chart-current" id="chart-mem-cur">—</div>
+                </div>
+                <canvas class="chart-canvas" id="chart-mem" height="140"></canvas>
+              </div>
+            </div>
           </div>
           <div class="tab-pane" id="pane-inspect">
             <div class="inspect-view"><pre id="inspect">Loading…</pre></div>
@@ -250,6 +306,7 @@
           t.classList.add('active');
           document.getElementById(`pane-${t.dataset.tab}`).classList.add('active');
           if (t.dataset.tab === 'inspect') loadInspect(container.id);
+          if (t.dataset.tab === 'metrics') redrawDetailCharts();
         };
       });
 
@@ -324,6 +381,152 @@
         renderSidebarHeader();
         if (payload.status === 'connected') loadContainers();
       }
+    }
+
+    function startMetricsStream(serverId) {
+      if (metricsStream) { metricsStream.close(); metricsStream = null; }
+      samplesByContainer.clear();
+      metricsServerId = serverId;
+      const token = API.getToken();
+      metricsStream = new EventSource(`/api/servers/${serverId}/metrics/stream?token=${encodeURIComponent(token)}`);
+      metricsStream.onmessage = (ev) => {
+        try {
+          const payload = JSON.parse(ev.data);
+          applyMetrics(payload);
+        } catch (_) {}
+      };
+      metricsStream.addEventListener('error', () => {});
+    }
+
+    function applyMetrics(payload) {
+      if (payload.host) renderHostTiles(payload.host);
+      const seen = new Set();
+      for (const c of payload.containers || []) {
+        seen.add(c.id);
+        let buf = samplesByContainer.get(c.id);
+        if (!buf) { buf = []; samplesByContainer.set(c.id, buf); }
+        buf.push({ ts: payload.ts, cpu: c.cpuPercent, mem: c.memUsed, memPct: c.memPercent });
+        while (buf.length > SAMPLE_WINDOW) buf.shift();
+      }
+      // Push a zero sample for running containers we didn't get stats for this tick
+      // (keeps sparkline time-aligned). Drop buffers for containers that disappeared.
+      for (const id of Array.from(samplesByContainer.keys())) {
+        if (!seen.has(id)) samplesByContainer.delete(id);
+      }
+      redrawSparklines();
+      if (selectedContainerId && samplesByContainer.has(selectedContainerId)) {
+        redrawDetailCharts();
+      }
+    }
+
+    function renderHostTiles(host) {
+      const cpu = host.cpu?.percent ?? 0;
+      const mem = host.memory?.percent ?? 0;
+      document.getElementById('mt-cpu-val').textContent = cpu.toFixed(1);
+      document.getElementById('mt-cpu-bar').style.width = `${Math.min(100, cpu)}%`;
+      document.getElementById('mt-cpu-sub').textContent = `${host.cpu?.cores ?? 0} cores`;
+      document.getElementById('mt-mem-val').textContent = mem.toFixed(1);
+      document.getElementById('mt-mem-bar').style.width = `${Math.min(100, mem)}%`;
+      document.getElementById('mt-mem-sub').textContent =
+        `${fmtBytes(host.memory?.used)} / ${fmtBytes(host.memory?.total)}`;
+      document.getElementById('mt-ct-running').textContent = host.containers?.running ?? 0;
+      document.getElementById('mt-ct-total').textContent = host.containers?.total ?? 0;
+      document.getElementById('mt-docker-ver').textContent = host.docker?.version || '—';
+      document.getElementById('mt-docker-os').textContent = host.docker?.os || '';
+    }
+
+    function redrawSparklines() {
+      document.querySelectorAll('.ci-spark').forEach((cv) => {
+        const buf = samplesByContainer.get(cv.dataset.id) || [];
+        drawSpark(cv, buf.map(s => s.cpu));
+      });
+    }
+
+    function drawSpark(canvas, values) {
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+      if (!values.length) return;
+      const max = Math.max(5, ...values);
+      ctx.strokeStyle = '#4cd4a8';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      values.forEach((v, i) => {
+        const x = (i / Math.max(1, values.length - 1)) * w;
+        const y = h - (v / max) * (h - 2) - 1;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+
+    function redrawDetailCharts() {
+      const buf = samplesByContainer.get(selectedContainerId) || [];
+      const cpuCanvas = document.getElementById('chart-cpu');
+      const memCanvas = document.getElementById('chart-mem');
+      if (!cpuCanvas || !memCanvas) return;
+      const latest = buf[buf.length - 1];
+      if (latest) {
+        document.getElementById('chart-cpu-cur').textContent = `${latest.cpu.toFixed(2)}%`;
+        document.getElementById('chart-mem-cur').textContent =
+          `${fmtBytes(latest.mem)} (${latest.memPct.toFixed(1)}%)`;
+      }
+      drawChart(cpuCanvas, buf.map(s => s.cpu), { unit: '%', minMax: 5, color: '#4cd4a8' });
+      drawChart(memCanvas, buf.map(s => s.mem), { unit: 'bytes', minMax: 1024 * 1024, color: '#6aa9ff' });
+    }
+
+    function drawChart(canvas, values, opts) {
+      const dpr = window.devicePixelRatio || 1;
+      const cssW = canvas.clientWidth || canvas.parentElement.clientWidth;
+      const cssH = canvas.clientHeight || 140;
+      if (canvas.width !== cssW * dpr || canvas.height !== cssH * dpr) {
+        canvas.width = cssW * dpr;
+        canvas.height = cssH * dpr;
+      }
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const w = cssW, h = cssH;
+      ctx.clearRect(0, 0, w, h);
+
+      // Axes
+      ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i++) {
+        const y = (h / 4) * i + 0.5;
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+      }
+      if (!values.length) return;
+      const max = Math.max(opts.minMax, ...values);
+      // Labels
+      ctx.fillStyle = 'rgba(255,255,255,0.4)';
+      ctx.font = '10px ui-monospace, monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText(opts.unit === 'bytes' ? fmtBytes(max) : `${max.toFixed(0)}${opts.unit}`, w - 4, 10);
+      ctx.fillText(opts.unit === 'bytes' ? '0' : `0${opts.unit}`, w - 4, h - 4);
+
+      // Filled line
+      ctx.strokeStyle = opts.color;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      values.forEach((v, i) => {
+        const x = (i / Math.max(1, values.length - 1)) * w;
+        const y = h - (v / max) * (h - 6) - 2;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+      // Soft fill under
+      ctx.lineTo(w, h);
+      ctx.lineTo(0, h);
+      ctx.closePath();
+      ctx.fillStyle = opts.color + '22';
+      ctx.fill();
+    }
+
+    function fmtBytes(n) {
+      if (!n || n <= 0) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let i = 0;
+      while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+      return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
     }
 
     boot();

@@ -2,6 +2,7 @@ import express from 'express';
 import { db } from '../db.js';
 import { requireAuth } from '../auth.js';
 import serverManager from '../serverManager.js';
+import { summarizeContainer, summarizeHost } from '../metrics.js';
 
 const router = express.Router({ mergeParams: true });
 
@@ -49,6 +50,100 @@ router.get('/info', async (req, res) => {
   } catch (err) {
     res.status(502).json({ error: err.message });
   }
+});
+
+async function collectSamples(docker, { userFilterIds = null } = {}) {
+  const info = await docker.info();
+  const running = await docker.listContainers({ all: false });
+  const targets = userFilterIds
+    ? running.filter((c) => userFilterIds.has(c.Id))
+    : running;
+  const samples = await Promise.all(
+    targets.map(async (c) => {
+      try {
+        const stats = await docker.getContainer(c.Id).stats({ stream: false });
+        const name = (c.Names[0] || '').replace(/^\//, '');
+        return summarizeContainer(c.Id, name, stats);
+      } catch (_) {
+        return null;
+      }
+    })
+  );
+  return { info, samples: samples.filter(Boolean) };
+}
+
+function allowedContainerIds(user, serverId) {
+  if (user.role === 'admin') return null;
+  return new Set(
+    (user.assignedContainers || [])
+      .filter((a) => a.serverId === serverId)
+      .map((a) => a.containerId)
+  );
+}
+
+router.get('/stats', async (req, res) => {
+  try {
+    const filter = allowedContainerIds(req.user, req.server.id);
+    const { info, samples } = await collectSamples(req.docker, { userFilterIds: filter });
+    res.json({ host: summarizeHost(info, samples), containers: samples });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
+router.get('/containers/:id/stats', async (req, res) => {
+  if (!canAccessContainer(req.user, req.server.id, req.params.id)) {
+    return res.status(403).json({ error: 'Access denied for this container' });
+  }
+  try {
+    const container = req.docker.getContainer(req.params.id);
+    const inspect = await container.inspect();
+    const name = (inspect.Name || '').replace(/^\//, '');
+    const stats = await container.stats({ stream: false });
+    res.json(summarizeContainer(req.params.id, name, stats));
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
+router.get('/metrics/stream', async (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders?.();
+
+  const filter = allowedContainerIds(req.user, req.server.id);
+  let closed = false;
+  req.on('close', () => { closed = true; });
+
+  const tick = async () => {
+    if (closed) return;
+    try {
+      const { info, samples } = await collectSamples(req.docker, { userFilterIds: filter });
+      if (closed) return;
+      const payload = {
+        ts: Date.now(),
+        host: summarizeHost(info, samples),
+        containers: samples,
+      };
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    } catch (err) {
+      if (closed) return;
+      res.write(`event: error\ndata: ${JSON.stringify({ error: err.message })}\n\n`);
+    }
+  };
+
+  await tick();
+  const interval = setInterval(tick, 2000);
+  const heartbeat = setInterval(() => res.write(': ping\n\n'), 15000);
+
+  req.on('close', () => {
+    clearInterval(interval);
+    clearInterval(heartbeat);
+  });
 });
 
 router.get('/containers', async (req, res) => {

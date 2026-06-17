@@ -84,6 +84,7 @@
     if (!container) return;
     const items = [
       { href: '/index.html', label: 'Dashboard' },
+      { href: '/services.html', label: 'Services' },
     ];
     if (user && user.role === 'admin') {
       items.push({ href: '/servers.html', label: 'Servers' });
