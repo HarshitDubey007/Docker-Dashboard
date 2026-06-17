@@ -117,7 +117,7 @@ cd Docker-Dashboard
 ./deploy.sh
 ```
 
-Open **http://localhost:3000** and log in with:
+Open **http://localhost:3006** and log in with:
 
 - Username: `admin`
 - Password: `admin123` (change immediately — see [First login](#first-login--initial-setup))
@@ -165,7 +165,7 @@ npm install
 cat > .env <<'EOF'
 JWT_SECRET=replace-with-openssl-rand-hex-32
 DEFAULT_ADMIN_PASSWORD=admin123
-PORT=3000
+PORT=3006
 EOF
 
 # 3. Run in watch mode
@@ -190,7 +190,7 @@ All configuration is via environment variables. In Docker deployments these come
 |----------|----------|---------|-------------|
 | `JWT_SECRET` | **yes** | — | HMAC secret for signing session tokens. Generate with `openssl rand -hex 32`. |
 | `DEFAULT_ADMIN_PASSWORD` | no | `admin123` | Password for the bootstrap admin user. Only used on first boot (when the DB is empty). |
-| `PORT` | no | `3000` | HTTP port the API listens on. |
+| `PORT` | no | `3006` | HTTP port the API listens on. |
 | `DATA_DIR` | no | `./data` (dev) / `/app/data` (Docker) | Directory for `db.json`. |
 | `DOCKER_GID` | yes (Docker only) | auto-detected | GID of the host `docker` group. Required so the non-root container user can read `/var/run/docker.sock`. Find it with `getent group docker \| cut -d: -f3`. |
 | `PM2_ENABLED` | no | `1` | Attach the PM2 source to the Local Server. Set `0`/`false` to hide it. Auto-skipped if the `pm2` CLI isn't on `PATH`. See [Unified service control](#unified-service-control-docker--pm2--systemd). |
@@ -215,7 +215,7 @@ Rotating the secret will invalidate all existing sessions — users will be logg
 
 ## First login & initial setup
 
-1. Log in at `http://<host>:3000` with `admin / admin123`.
+1. Log in at `http://<host>:3006` with `admin / admin123`.
 2. **Change the admin password.** Go to the user avatar → profile, or via the **Users** page if you're an admin.
 3. Visit **Servers** to attach remote Docker hosts, if any.
 4. Create viewer users under **Users** → **Add User**, and assign them specific containers.
@@ -565,10 +565,10 @@ grep DOCKER_GID .env                     # should match
 docker compose up -d --force-recreate
 ```
 
-### Port 3000 unreachable from your browser
+### Port 3006 unreachable from your browser
 
-- Local Ubuntu firewall: `sudo ufw status`; if active, `sudo ufw allow 3000/tcp`.
-- Cloud firewall (DigitalOcean / AWS / GCP): add an inbound TCP 3000 rule. Prefer scoping by source IP.
+- Local Ubuntu firewall: `sudo ufw status`; if active, `sudo ufw allow 3006/tcp`.
+- Cloud firewall (DigitalOcean / AWS / GCP): add an inbound TCP 3006 rule. Prefer scoping by source IP.
 
 ### Container keeps restarting
 
@@ -601,11 +601,11 @@ You're behind a reverse proxy and `TRUST_PROXY` is still at the default. Set `TR
 
 This is a powerful tool: anyone with admin access to the dashboard effectively has root on every attached Docker host. With the unified service layer it can also start/stop **host-level** PM2 and systemd services — so the blast radius is even larger. Treat it accordingly.
 
-- **Bind to `127.0.0.1` behind a TLS reverse proxy.** Never expose port 3000 to the public internet without a reverse proxy + TLS + strong passwords. Put it behind nginx / Caddy / Traefik with HTTPS, and bind the container to `127.0.0.1:3000:3000` so the proxy is the only entry. The host-level control power makes this **more** important, not less.
+- **Bind to `127.0.0.1` behind a TLS reverse proxy.** Never expose port 3006 to the public internet without a reverse proxy + TLS + strong passwords. Put it behind nginx / Caddy / Traefik with HTTPS, and bind the container to `127.0.0.1:3006:3006` so the proxy is the only entry. The host-level control power makes this **more** important, not less.
 - **Control actions are admin-only and audited.** Every start/stop/restart on any source is logged to `data/audit.log` (see [Auditing](#auditing)). Viewers stay read-only and scoped to their assigned services.
 - **Grant the least systemd privilege that works.** Use a narrow polkit rule for specific units instead of running the dashboard as root — see [Permissions reality](#permissions-reality-read-this-before-expecting-control-to-work).
 - **Set `TRUST_PROXY`** when behind a proxy so the access/audit logs and rate limiter see real client IPs, not the proxy.
-- **Change `admin123` immediately.** Bots scan port 3000.
+- **Change `admin123` immediately.** Bots scan port 3006.
 - **Rotate `JWT_SECRET`** on any suspected compromise — this invalidates every existing session.
 - **Scope by source IP** in your cloud firewall where possible.
 - **Use TLS** for any remote Docker connection — plain TCP (`2375`) on an untrusted network is a critical vulnerability.

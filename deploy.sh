@@ -57,7 +57,7 @@ if [ ! -f .env ]; then
     GENERATED_SECRET="$(head -c 48 /dev/urandom | base64 | tr -d '=+/ \n' | head -c 64)"
   fi
   cat > .env <<EOF
-PORT=3000
+PORT=3006
 JWT_SECRET=${GENERATED_SECRET}
 DEFAULT_ADMIN_PASSWORD=admin123
 DOCKER_GID=${DOCKER_GID}
@@ -105,8 +105,8 @@ log "Waiting for container health..."
 sleep 3
 "${COMPOSE[@]}" ps
 
-PORT_VAL="$(grep -E '^PORT=' .env | cut -d= -f2 || echo 3000)"
-PORT_VAL="${PORT_VAL:-3000}"
+PORT_VAL="$(grep -E '^PORT=' .env | cut -d= -f2 || echo 3006)"
+PORT_VAL="${PORT_VAL:-3006}"
 ADMIN_PW="$(grep -E '^DEFAULT_ADMIN_PASSWORD=' .env | cut -d= -f2 || echo admin123)"
 ADMIN_PW="${ADMIN_PW:-admin123}"
 

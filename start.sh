@@ -46,7 +46,7 @@ if [ ! -f .env ]; then
     SECRET="$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')"
   fi
   cat > .env <<EOF
-PORT=3000
+PORT=3006
 JWT_SECRET=${SECRET}
 DEFAULT_ADMIN_PASSWORD=admin123
 EOF
@@ -66,7 +66,7 @@ fi
 
 # 5. Launch (foreground; Ctrl-C to stop). For persistence, see the README
 #    (run under pm2 or install a systemd unit).
-PORT_VAL="$(grep -E '^PORT=' .env | cut -d= -f2 || echo 3000)"; PORT_VAL="${PORT_VAL:-3000}"
+PORT_VAL="$(grep -E '^PORT=' .env | cut -d= -f2 || echo 3006)"; PORT_VAL="${PORT_VAL:-3006}"
 echo
 ok "starting Docker Dashboard on http://localhost:${PORT_VAL}  (login: admin / see .env)"
 warn "this runs in the foreground — Ctrl-C to stop. See README for running it persistently."

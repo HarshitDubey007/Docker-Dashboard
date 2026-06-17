@@ -16,7 +16,7 @@ import { accessLogger, ipBlocklist, globalLimiter } from './security.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = Number(process.env.PORT) || 3000;
+const PORT = Number(process.env.PORT) || 3006;
 
 async function main() {
   await init();
@@ -46,7 +46,7 @@ async function main() {
     res.status(500).json({ error: err.message || 'Internal server error' });
   });
 
-  serverManager.startPolling(30000);
+  serverManager.startPolling(30060);
 
   const server = app.listen(PORT, () => {
     console.log(`[docker-dashboard] listening on http://0.0.0.0:${PORT}`);
