@@ -1,3 +1,4 @@
+import './loadEnv.js'; // MUST be first — populates process.env before modules below read it
 import path from 'path';
 import { fileURLToPath } from 'url';
 import express from 'express';

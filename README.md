@@ -85,7 +85,28 @@ A lightweight, self-hosted web dashboard for monitoring and managing Docker cont
 
 ---
 
-## Quick start (Docker, recommended)
+## Two ways to run
+
+| Mode | Command | Manages |
+|------|---------|---------|
+| **Docker** (isolated) | `./deploy.sh` | Docker containers only |
+| **Host / native** (turnkey) | `./start.sh` | Docker **+ PM2 + systemd** |
+
+PM2 and systemd run on the **host**, outside Docker. A container is an isolated process namespace, so it physically cannot see or control host processes without breaking that isolation — there is no zero-config way to manage host PM2/systemd *from inside a container*. To manage them, run the dashboard **on the host** with `./start.sh`. That's still clone-and-one-command:
+
+```bash
+git clone https://github.com/HarshitDubey007/Docker-Dashboard.git
+cd Docker-Dashboard
+sudo ./start.sh        # sudo → manage root-owned PM2 apps and all systemd units
+```
+
+`start.sh` installs deps, generates `.env` (random `JWT_SECRET`), and launches the app. Run it as the user whose PM2 daemon you want to see (PM2 is per-user); use `sudo` for root-owned apps. See [Unified service control](#unified-service-control-docker--pm2--systemd) for persistence (run under PM2 / a systemd unit) and the permissions details.
+
+---
+
+## Quick start (Docker, recommended for Docker-only)
+
+> Docker mode manages **Docker containers only** — PM2/systemd need [host mode](#two-ways-to-run) above.
 
 ```bash
 # 1. Clone
@@ -140,16 +161,20 @@ git clone https://github.com/HarshitDubey007/Docker-Dashboard.git
 cd Docker-Dashboard
 npm install
 
-# 2. Set required env vars
-export JWT_SECRET=$(openssl rand -hex 32)
-export DEFAULT_ADMIN_PASSWORD=admin123     # optional, only used on first boot
-export PORT=3000                           # optional
+# 2. Configure env — either export vars, or create a .env file (auto-loaded):
+cat > .env <<'EOF'
+JWT_SECRET=replace-with-openssl-rand-hex-32
+DEFAULT_ADMIN_PASSWORD=admin123
+PORT=3000
+EOF
 
 # 3. Run in watch mode
 npm run dev      # auto-restarts on file changes (node --watch)
 # or
 npm start        # single run
 ```
+
+> `src/loadEnv.js` auto-loads `.env` on startup (no `dotenv` dependency), so `npm start` works without exporting anything. Real environment variables always take precedence over `.env`. Or just run `./start.sh`, which generates `.env` for you.
 
 Your local Docker socket at `/var/run/docker.sock` is used automatically if present. On macOS with Docker Desktop this works out of the box.
 
@@ -237,9 +262,52 @@ The **Services** page (`/services.html`) lists everything running on a host — 
 
 Every source implements one common `ServiceSource` interface (`list / inspect / start / stop / restart / logsStream`) and normalizes into a single `Service` shape (`id, name, source, status, cpuPct, memBytes, uptimeMs, restarts, pid`). The Docker source wraps the existing dockerode path; PM2 and systemd are **host-level** sources. The frontend renders all sources identically.
 
-PM2 and systemd run on the host, not inside Docker, so they can't be reached from a container that only has `docker.sock` mounted. They are attached **only to the "Local Server"** and only work in **`local` host-access mode** — i.e. when the dashboard process runs on the host (or a container with the host's PM2/systemd reachable). A future **`agent` mode** (a small agent on each remote host exposing the same interface over HTTP) will extend this to remote hosts without changing the API.
+PM2 and systemd run on the host, not inside Docker, so they can't be reached from a container that only has `docker.sock` mounted. They are attached **only to the "Local Server"** and only work in **`local` host-access mode** — i.e. when the dashboard process runs on the host. A future **`agent` mode** (a small agent on each remote host exposing the same interface over HTTP) will extend this to remote hosts without changing the API.
+
+**This is why a Dockerized dashboard shows "pm2: not available on this host".** The fix is to run it on the host instead of in a container — which is one command:
+
+```bash
+sudo ./start.sh        # see "Two ways to run" near the top of this README
+```
 
 If a source's CLI isn't installed (`pm2`, `systemctl`), it's auto-skipped; the Services page shows a short note explaining why a source is empty. You can also force-disable either with `PM2_ENABLED=0` / `SYSTEMD_ENABLED=0`.
+
+### Running the host-mode dashboard persistently
+
+`./start.sh` runs in the foreground (Ctrl-C stops it). To keep it running across reboots, pick one:
+
+**Under PM2 itself** (it'll even appear in its own Services list):
+
+```bash
+export JWT_SECRET=$(openssl rand -hex 32)
+sudo -E pm2 start src/server.js --name docker-dashboard --update-env
+sudo pm2 save        # persist across reboot (with `pm2 startup` configured)
+```
+
+**As a systemd unit** (`/etc/systemd/system/docker-dashboard.service`):
+
+```ini
+[Unit]
+Description=Docker Dashboard
+After=network.target
+
+[Service]
+WorkingDirectory=/path/to/Docker-Dashboard
+ExecStart=/usr/bin/node src/server.js
+EnvironmentFile=/path/to/Docker-Dashboard/.env
+Restart=on-failure
+# Runs as root so it can manage root-owned PM2 apps and systemd units.
+# Drop to a dedicated user + polkit rule for least privilege (see below).
+User=root
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now docker-dashboard
+```
 
 > **PM2 is per-user.** The PM2 daemon is scoped to the OS user that started it. The dashboard only sees the PM2 daemon of the user it runs as — apps managed by *other* users are invisible. Cross-user PM2 is a known limitation, out of scope for now.
 
@@ -350,6 +418,7 @@ A superset of the Docker routes above. `:source` is `docker`, `pm2`, or `systemd
 Docker-Dashboard/
 ├── src/
 │   ├── server.js          # Express bootstrap
+│   ├── loadEnv.js         # Zero-dep .env loader (host mode); no-op in Docker
 │   ├── db.js              # lowdb store, bootstrap admin + local server
 │   ├── auth.js            # JWT + bcrypt, auth middleware, /api/auth routes
 │   ├── security.js        # Access logger, IP blocklist, global rate limiter
@@ -381,7 +450,8 @@ Docker-Dashboard/
 │   └── js/api.js          # Shared fetch/auth helpers
 ├── Dockerfile             # Multi-stage prod image (non-root UID 1001)
 ├── docker-compose.yml     # Volumes, socket mount, group_add
-├── deploy.sh              # One-shot setup script
+├── start.sh               # Turnkey native host launcher (Docker + PM2 + systemd)
+├── deploy.sh              # One-shot Docker setup script
 ├── .env.example           # Template env
 └── package.json
 ```
