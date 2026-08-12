@@ -44,8 +44,10 @@ export function summarizeContainer(id, name, stats) {
 }
 
 // Aggregate per-container samples into a host-level summary.
-// `info` is the response from `docker.info()`.
-export function summarizeHost(info, containerSamples) {
+// `info` is the response from `docker.info()`. `counts` optionally overrides
+// docker's own container tallies — callers pass the visible-only counts when
+// HIDDEN_CONTAINERS is in play (see hidden.js).
+export function summarizeHost(info, containerSamples, counts = null) {
   const totalMem = info?.MemTotal ?? 0;
   const cores = info?.NCPU ?? 0;
   let memUsed = 0;
@@ -60,7 +62,7 @@ export function summarizeHost(info, containerSamples) {
   return {
     cpu: { percent: round2(cpuPercent), cores },
     memory: { used: memUsed, total: totalMem, percent: round2(memPercent) },
-    containers: {
+    containers: counts || {
       total: info?.Containers ?? 0,
       running: info?.ContainersRunning ?? 0,
       stopped: info?.ContainersStopped ?? 0,

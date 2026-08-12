@@ -94,7 +94,8 @@ router.get('/services/:source/:id/inspect', async (req, res) => {
     const detail = await src.inspect(req.params.id);
     res.json(detail);
   } catch (err) {
-    res.status(502).json({ error: err.message });
+    // err.statusCode is set for hidden services (404) — see hidden.js.
+    res.status(err.statusCode || 502).json({ error: err.message });
   }
 });
 
@@ -147,7 +148,7 @@ async function serviceAction(req, res, action) {
   try {
     result = await src[action](id);
   } catch (err) {
-    result = { ok: false, message: err.message };
+    result = { ok: false, message: err.message, status: err.statusCode };
   }
   auditControl({
     user: req.user,
@@ -159,7 +160,9 @@ async function serviceAction(req, res, action) {
     result: result.ok ? 'ok' : 'error',
     message: result.ok ? null : result.message,
   });
-  if (!result.ok) return res.status(502).json({ error: result.message || 'Action failed' });
+  if (!result.ok) {
+    return res.status(result.status || 502).json({ error: result.message || 'Action failed' });
+  }
   res.json({ ok: true, message: result.message });
 }
 

@@ -198,6 +198,7 @@ All configuration is via environment variables. In Docker deployments these come
 | `PORT` | no | `3006` | HTTP port the API listens on. |
 | `DATA_DIR` | no | `./data` (dev) / `/app/data` (Docker) | Directory for `db.json`. |
 | `DOCKER_GID` | yes (Docker only) | auto-detected | GID of the host `docker` group. Required so the non-root container user can read `/var/run/docker.sock`. Find it with `getent group docker \| cut -d: -f3`. |
+| `HIDDEN_CONTAINERS` | no | — | Comma-separated glob patterns; matching containers are hidden from every view for every user. See [Hiding containers](#hiding-containers). |
 | `PM2_ENABLED` | no | `1` | Attach the PM2 source to the Local Server. Set `0`/`false` to hide it. Auto-skipped if the `pm2` CLI isn't on `PATH`. See [Unified service control](#unified-service-control-docker--pm2--systemd). |
 | `SYSTEMD_ENABLED` | no | `1` | Attach the systemd source to the Local Server. Set `0`/`false` to hide it. Auto-skipped if `systemctl` isn't available. |
 | `TRUST_PROXY` | no | `loopback` | Express `trust proxy` setting. Set to `1` (or a hop count) when running behind nginx/Cloudflare so `req.ip` resolves to the real client IP. |
@@ -211,6 +212,20 @@ All configuration is via environment variables. In Docker deployments these come
 | `PRUNE_VOLUMES` | no | `0` | When `1`, the daily script also runs `docker volume prune -f`. **Destructive** — only enable if no host containers rely on anonymous volumes. |
 | `ACCESS_LOG_MAX_BYTES` | no | `52428800` | Rotate `data/access.log` once it exceeds this size. |
 | `DASHBOARD_CONTAINER` | no | `docker-dashboard` | Container name the daily script `docker exec`s into to run the abuse scanner. |
+
+### Hiding containers
+
+A dashboard running on a busy host usually shouldn't show every container on that host. `HIDDEN_CONTAINERS` takes a comma-separated list of glob patterns; anything matching is treated as if it doesn't exist:
+
+```bash
+# .env
+HIDDEN_CONTAINERS=nirio-*,crm-*,solar_ai_agents-*
+```
+
+- Patterns are matched **case-insensitively and anchored** against each of a container's names and against its ID (full or 12-char short form). `*` and `?` are the only wildcards — `crm` hides a container named exactly `crm`, while `crm-*` hides the whole compose project.
+- Hidden containers are excluded from the container list, the unified `/services` list, `/stats`, the metrics SSE stream, the host CPU/memory aggregates, and the header/sidebar counts. Their by-ID routes (`inspect`, `logs`, `stats`, `start`/`stop`/`restart`) return `404`.
+- This is host-level config, **not** a per-user view: there is no way to reveal a hidden container from the UI, admins included. It also does nothing to the containers themselves — they keep running, they're just invisible here.
+- Changes require a restart (`docker compose up -d` or restart the host process).
 
 ### Regenerating `JWT_SECRET`
 

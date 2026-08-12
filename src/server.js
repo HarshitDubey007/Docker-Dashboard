@@ -12,6 +12,7 @@ import dockerRouter from './routes/docker.js';
 import servicesRouter from './routes/services.js';
 import usersRouter from './routes/users.js';
 import { accessLogger, ipBlocklist, globalLimiter } from './security.js';
+import { hiddenPatterns } from './hidden.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -50,6 +51,10 @@ async function main() {
 
   const server = app.listen(PORT, () => {
     console.log(`[docker-dashboard] listening on http://0.0.0.0:${PORT}`);
+    const hidden = hiddenPatterns();
+    if (hidden.length) {
+      console.log(`[docker-dashboard] hiding containers matching: ${hidden.join(', ')}`);
+    }
   });
 
   const shutdown = () => {

@@ -5,6 +5,7 @@
 // like any other source.
 
 import { calcCpuPercent, calcMemUsage } from '../metrics.js';
+import { assertVisible, visibleContainers } from '../hidden.js';
 import { LogStream } from './exec.js';
 
 // Map Docker's container State to the normalized Service status vocabulary.
@@ -40,7 +41,9 @@ export class DockerSource {
   }
 
   async list() {
-    const all = await this.docker.listContainers({ all: true });
+    // Containers matched by HIDDEN_CONTAINERS drop out here too, so the unified
+    // /services view stays consistent with the Docker-only container list.
+    const all = visibleContainers(await this.docker.listContainers({ all: true }));
     // Resource numbers need a stats read per container, which is the expensive
     // part. Only sample running containers; stopped ones report null.
     const samples = await Promise.all(
@@ -68,21 +71,25 @@ export class DockerSource {
     }));
   }
 
-  inspect(id) {
+  async inspect(id) {
+    await assertVisible(this.docker, id);
     return this.docker.getContainer(id).inspect();
   }
 
   async start(id) {
+    await assertVisible(this.docker, id);
     await this.docker.getContainer(id).start();
     return { ok: true, message: 'started' };
   }
 
   async stop(id) {
+    await assertVisible(this.docker, id);
     await this.docker.getContainer(id).stop();
     return { ok: true, message: 'stopped' };
   }
 
   async restart(id) {
+    await assertVisible(this.docker, id);
     await this.docker.getContainer(id).restart();
     return { ok: true, message: 'restarted' };
   }
@@ -93,6 +100,7 @@ export class DockerSource {
     const stream = new LogStream();
     let raw;
     try {
+      await assertVisible(this.docker, id);
       raw = await this.docker.getContainer(id).logs({
         follow,
         stdout: true,

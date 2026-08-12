@@ -3,6 +3,7 @@ import { v4 as uuid } from 'uuid';
 import { db, save } from '../db.js';
 import { requireAuth, requireAdmin } from '../auth.js';
 import serverManager from '../serverManager.js';
+import { visibleCounts } from '../hidden.js';
 
 const router = express.Router();
 
@@ -34,8 +35,9 @@ router.get('/', requireAuth, async (req, res) => {
         try {
           const docker = serverManager.getDockerForServer(s.id);
           const info = await docker.info();
-          extras.containerCount = info.Containers || 0;
-          extras.containersRunning = info.ContainersRunning || 0;
+          const counts = await visibleCounts(docker, info);
+          extras.containerCount = counts.total;
+          extras.containersRunning = counts.running;
           extras.version = info.ServerVersion;
           extras.os = info.OperatingSystem || info.OSType;
         } catch (err) {

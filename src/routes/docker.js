@@ -3,6 +3,12 @@ import { db } from '../db.js';
 import { requireAuth } from '../auth.js';
 import serverManager from '../serverManager.js';
 import { summarizeContainer, summarizeHost } from '../metrics.js';
+import {
+  assertVisible,
+  hasHiddenPatterns,
+  visibleContainers,
+  visibleCounts,
+} from '../hidden.js';
 
 const router = express.Router({ mergeParams: true });
 
@@ -26,10 +32,24 @@ function canAccessContainer(user, serverId, containerId) {
 
 router.use(requireAuth, resolveServer);
 
+// Containers matched by HIDDEN_CONTAINERS never reach a route handler — they are
+// filtered out of every list, and by-ID access 404s as if they did not exist.
+router.param('id', async (req, res, next, id) => {
+  if (!hasHiddenPatterns()) return next();
+  try {
+    await assertVisible(req.docker, id);
+  } catch (err) {
+    if (err.statusCode === 404) return res.status(404).json({ error: 'Container not found' });
+    // Daemon/inspect failures fall through so the route reports the real error.
+  }
+  next();
+});
+
 router.get('/info', async (req, res) => {
   try {
     const info = await req.docker.info();
     const version = await req.docker.version();
+    const counts = await visibleCounts(req.docker, info);
     res.json({
       name: req.server.name,
       serverId: req.server.id,
@@ -39,9 +59,9 @@ router.get('/info', async (req, res) => {
         os: info.OperatingSystem || info.OSType,
         arch: info.Architecture,
         kernel: info.KernelVersion,
-        containers: info.Containers,
-        containersRunning: info.ContainersRunning,
-        containersStopped: info.ContainersStopped,
+        containers: counts.total,
+        containersRunning: counts.running,
+        containersStopped: counts.stopped,
         images: info.Images,
         cpus: info.NCPU,
         memory: info.MemTotal,
@@ -54,7 +74,15 @@ router.get('/info', async (req, res) => {
 
 async function collectSamples(docker, { userFilterIds = null } = {}) {
   const info = await docker.info();
-  const running = await docker.listContainers({ all: false });
+  // Listing all (not just running) in one call gives both the sample targets and
+  // the visible-only counts the host summary needs.
+  const all = visibleContainers(await docker.listContainers({ all: true }));
+  const running = all.filter((c) => c.State === 'running');
+  const counts = {
+    total: all.length,
+    running: running.length,
+    stopped: all.length - running.length,
+  };
   const targets = userFilterIds
     ? running.filter((c) => userFilterIds.has(c.Id))
     : running;
@@ -69,7 +97,7 @@ async function collectSamples(docker, { userFilterIds = null } = {}) {
       }
     })
   );
-  return { info, samples: samples.filter(Boolean) };
+  return { info, counts, samples: samples.filter(Boolean) };
 }
 
 function allowedContainerIds(user, serverId) {
@@ -84,8 +112,8 @@ function allowedContainerIds(user, serverId) {
 router.get('/stats', async (req, res) => {
   try {
     const filter = allowedContainerIds(req.user, req.server.id);
-    const { info, samples } = await collectSamples(req.docker, { userFilterIds: filter });
-    res.json({ host: summarizeHost(info, samples), containers: samples });
+    const { info, counts, samples } = await collectSamples(req.docker, { userFilterIds: filter });
+    res.json({ host: summarizeHost(info, samples, counts), containers: samples });
   } catch (err) {
     res.status(502).json({ error: err.message });
   }
@@ -122,11 +150,11 @@ router.get('/metrics/stream', async (req, res) => {
   const tick = async () => {
     if (closed) return;
     try {
-      const { info, samples } = await collectSamples(req.docker, { userFilterIds: filter });
+      const { info, counts, samples } = await collectSamples(req.docker, { userFilterIds: filter });
       if (closed) return;
       const payload = {
         ts: Date.now(),
-        host: summarizeHost(info, samples),
+        host: summarizeHost(info, samples, counts),
         containers: samples,
       };
       res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -148,7 +176,7 @@ router.get('/metrics/stream', async (req, res) => {
 
 router.get('/containers', async (req, res) => {
   try {
-    const all = await req.docker.listContainers({ all: true });
+    const all = visibleContainers(await req.docker.listContainers({ all: true }));
     const shaped = all.map((c) => ({
       id: c.Id,
       shortId: c.Id.slice(0, 12),

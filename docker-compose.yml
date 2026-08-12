@@ -20,6 +20,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required — set it in .env}
       DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:-admin123}
       DATA_DIR: /app/data
+      HIDDEN_CONTAINERS: ${HIDDEN_CONTAINERS:-}
     logging:
       driver: json-file
       options:

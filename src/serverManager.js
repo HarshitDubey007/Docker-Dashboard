@@ -2,6 +2,7 @@ import Docker from 'dockerode';
 import { EventEmitter } from 'events';
 import { db, save } from './db.js';
 import { buildSources } from './sources/index.js';
+import { visibleCounts } from './hidden.js';
 
 class ServerManager extends EventEmitter {
   constructor() {
@@ -78,7 +79,7 @@ class ServerManager extends EventEmitter {
       await docker.ping();
       const version = await docker.version();
       const info = await docker.info();
-      const containerCount = info.Containers || 0;
+      const counts = await visibleCounts(docker, info);
       if (persist && server && !ephemeralConfig) {
         server.status = 'connected';
         server.lastChecked = new Date().toISOString();
@@ -96,8 +97,8 @@ class ServerManager extends EventEmitter {
         version: version.Version,
         apiVersion: version.ApiVersion,
         os: info.OperatingSystem || info.OSType,
-        containers: containerCount,
-        containersRunning: info.ContainersRunning || 0,
+        containers: counts.total,
+        containersRunning: counts.running,
       };
     } catch (err) {
       const msg = err.message || String(err);
